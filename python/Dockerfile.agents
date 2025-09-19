@@ -1,6 +1,14 @@
 # Agents Service - Lightweight Pydantic AI agents
 FROM python:3.12-slim
 
+# Set proper environment defaults
+ENV ARCHON_AGENTS_HOST=0.0.0.0
+ENV ARCHON_AGENTS_PORT=8052
+ENV LOG_LEVEL=INFO
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/app:/app/src
+
 WORKDIR /app
 
 # Install uv
@@ -17,13 +25,13 @@ RUN uv pip install --system --group agents
 COPY src/agents/ src/agents/
 COPY src/__init__.py src/
 
-# Set environment variables
-ENV PYTHONPATH="/app:$PYTHONPATH"
-ENV PYTHONUNBUFFERED=1
+# Create non-root user for security (works standalone + Kubernetes can override)
+RUN addgroup --gid 1001 archon && \
+    adduser --disabled-password --gecos '' --uid 1001 --gid 1001 archon && \
+    chown -R archon:archon /app
 
-# Expose Agents port
-ARG ARCHON_AGENTS_PORT=8052
-ENV ARCHON_AGENTS_PORT=${ARCHON_AGENTS_PORT}
+USER 1001
+
 EXPOSE ${ARCHON_AGENTS_PORT}
 
 # Health check
@@ -31,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD sh -c "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:${ARCHON_AGENTS_PORT}/health')\""
 
 # Run the Agents service
-CMD sh -c "python -m uvicorn src.agents.server:app --host 0.0.0.0 --port ${ARCHON_AGENTS_PORT}"
+CMD ["sh", "-c", "python -m uvicorn src.agents.server:app --host ${ARCHON_AGENTS_HOST} --port ${ARCHON_AGENTS_PORT}"]

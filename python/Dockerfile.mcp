@@ -29,13 +29,25 @@ COPY src/server/config/__init__.py src/server/config/
 COPY src/server/config/service_discovery.py src/server/config/
 COPY src/server/config/logfire_config.py src/server/config/
 
+# Create non-root user for security
+RUN addgroup --gid 1001 archon && \
+    adduser --disabled-password --gecos '' --uid 1001 --gid 1001 archon && \
+    chown -R archon:archon /app
+
+USER 1001
+
 # Set environment variables
-ENV PYTHONPATH="/app:$PYTHONPATH"
+ENV PYTHONPATH="/app"
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV ARCHON_MCP_HOST=0.0.0.0
+ENV ARCHON_MCP_PORT=8051
+ENV LOG_LEVEL=INFO
 
 # Expose MCP port
 ARG ARCHON_MCP_PORT=8051
 ENV ARCHON_MCP_PORT=${ARCHON_MCP_PORT}
+
 EXPOSE ${ARCHON_MCP_PORT}
 
 # Run the MCP server

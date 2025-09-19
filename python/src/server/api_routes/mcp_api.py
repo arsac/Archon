@@ -6,6 +6,7 @@ The MCP container is managed by docker-compose, not by this API.
 """
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import docker
@@ -19,7 +20,12 @@ router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
 
 def get_container_status() -> dict[str, Any]:
-    """Get simple MCP container status without Docker management."""
+    """Get MCP container status from Kubernetes or Docker."""
+    # Check if we're running in Kubernetes
+    if KubernetesContainerStatus.is_kubernetes():
+        return KubernetesContainerStatus.get_mcp_status()
+
+    # Fall back to Docker implementation
     docker_client = None
     try:
         docker_client = docker.from_env()
@@ -207,3 +213,92 @@ async def mcp_health():
         safe_set_attribute(span, "status", "healthy")
 
         return result
+
+
+class KubernetesContainerStatus:
+    """Utility class for getting container status in Kubernetes environment."""
+
+    @staticmethod
+    def is_kubernetes() -> bool:
+        """Check if we're running in a Kubernetes pod."""
+        return os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount")
+
+    @staticmethod
+    def get_mcp_status() -> dict[str, Any]:
+        """Get MCP container status from Kubernetes API."""
+        try:
+            from kubernetes import client, config
+
+            # Load K8s config
+            config.load_incluster_config()
+            v1 = client.CoreV1Api()
+
+            # Get namespace and pod name
+            namespace = KubernetesContainerStatus._get_namespace()
+            pod_name = os.getenv("HOSTNAME", "unknown")
+
+            # Get pod
+            pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+
+            # Find MCP container
+            for container in (pod.status.container_statuses or []):
+                if container.name in ["archon-mcp", "mcp", "mcp-server"]:
+                    # Found MCP container - use K8s probe status
+                    if container.state.running:
+                        # Use ready field - it reflects probe status
+                        if container.ready:
+                            status = "running"
+                        else:
+                            status = "unhealthy"
+
+                        # Calculate uptime if available
+                        uptime = None
+                        if container.state.running.started_at:
+                            uptime = int((datetime.now(timezone.utc) -
+                                        container.state.running.started_at).total_seconds())
+
+                    elif container.state.waiting:
+                        status = "waiting"
+                        uptime = None
+
+                    elif container.state.terminated:
+                        status = "terminated"
+                        uptime = None
+                    else:
+                        status = "unknown"
+                        uptime = None
+
+                    return {
+                        "status": status,
+                        "uptime": uptime,
+                        "logs": [],
+                        "container_status": status
+                    }
+
+            # Pod found but no MCP container
+            return {
+                "status": "not_found",
+                "uptime": None,
+                "logs": [],
+                "container_status": "not_found"
+            }
+
+        except Exception as e:
+            # K8s API not accessible or other error
+            api_logger.debug(f"Cannot get K8s container status: {e}")
+            return {
+                "status": "error",
+                "uptime": None,
+                "logs": [],
+                "container_status": "error"
+            }
+
+    @staticmethod
+    def _get_namespace() -> str:
+        """Read the current namespace from service account."""
+        try:
+            with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace", "r") as f:
+                return f.read().strip()
+        except:
+            return "unknown"
+
